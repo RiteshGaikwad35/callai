@@ -544,7 +544,9 @@ async def voice(request: Request, call_id: str):
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://{settings.public_host}/media?call_id={call_id}" />
+    <Stream url="wss://{settings.public_host}/media">
+      <Parameter name="call_id" value="{call_id}" />
+    </Stream>
   </Connect>
 </Response>"""
     return Response(content=twiml, media_type="application/xml")
@@ -565,19 +567,9 @@ async def call_status(request: Request, call_id: str):
 async def media(ws: WebSocket):
     await ws.accept()
 
-    call_id = ws.query_params.get("call_id")
-    if not call_id:
-        logger.warning("Media stream connected with no call_id in query string")
-        await ws.close(code=1008)
-        return
-
-    ctx = call_contexts.get(call_id)
-    if not ctx:
-        logger.warning(f"[{call_id}] no call context found for media stream")
-        await ws.close(code=1008)
-        return
-
     stream_sid: str | None = None
+    call_id: str | None = None
+    ctx = None
     audio_buffer = bytearray()
     silence_ms = 0
     speaking = False
@@ -591,6 +583,20 @@ async def media(ws: WebSocket):
 
             if event == "start":
                 stream_sid = msg["start"]["streamSid"]
+                custom_params = msg["start"].get("customParameters", {})
+                call_id = custom_params.get("call_id")
+
+                if not call_id:
+                    logger.warning("Media stream 'start' event had no call_id parameter")
+                    await ws.close(code=1008)
+                    return
+
+                ctx = call_contexts.get(call_id)
+                if not ctx:
+                    logger.warning(f"[{call_id}] no call context found for media stream")
+                    await ws.close(code=1008)
+                    return
+
                 system_prompt = BASE_SYSTEM_INSTRUCTIONS.format(operator_prompt=ctx.operator_prompt)
                 sessions.create(stream_sid, call_id, system_prompt)
                 call_contexts.update_status(call_id, "in-progress")
