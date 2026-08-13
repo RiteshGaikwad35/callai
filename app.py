@@ -375,7 +375,12 @@ class TextToSpeech:
 
         if not mp3_io or mp3_io.getbuffer().nbytes == 0:
             return b""
-        segment = AudioSegment.from_mp3(mp3_io).set_frame_rate(8000).set_channels(1)
+        segment = (
+            AudioSegment.from_mp3(mp3_io)
+            .set_frame_rate(8000)
+            .set_channels(1)
+            .set_sample_width(2)  # lin2ulaw assumes 16-bit input; force it explicitly
+        )
         return audioop.lin2ulaw(segment.raw_data, 2)
 
     @staticmethod
