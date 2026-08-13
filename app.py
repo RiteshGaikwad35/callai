@@ -562,11 +562,19 @@ async def call_status(request: Request, call_id: str):
 # ---- Media stream: the live audio pipeline ---------------------------------
 
 @app.websocket("/media")
-async def media(ws: WebSocket, call_id: str):
+async def media(ws: WebSocket):
     await ws.accept()
+
+    call_id = ws.query_params.get("call_id")
+    if not call_id:
+        logger.warning("Media stream connected with no call_id in query string")
+        await ws.close(code=1008)
+        return
+
     ctx = call_contexts.get(call_id)
     if not ctx:
-        await ws.close()
+        logger.warning(f"[{call_id}] no call context found for media stream")
+        await ws.close(code=1008)
         return
 
     stream_sid: str | None = None
