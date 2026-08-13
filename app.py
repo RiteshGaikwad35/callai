@@ -47,9 +47,9 @@ from pathlib import Path
 
 import webrtcvad
 from cryptography.fernet import Fernet, InvalidToken
-from edge_tts import Communicate
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
+from gtts import gTTS
 from groq import APIError, Groq
 from pydantic import BaseModel, Field
 from pydub import AudioSegment
@@ -90,12 +90,12 @@ class Settings:
         )
 
 
-TTS_VOICE_MAP = {
-    "en": "en-US-AriaNeural",
-    "hi": "hi-IN-SwaraNeural",
-    "ta": "ta-IN-PallaviNeural",
+TTS_LANG_MAP = {
+    "en": "en",
+    "hi": "hi",
+    "ta": "ta",
 }
-DEFAULT_TTS_VOICE = "en-US-AriaNeural"
+DEFAULT_TTS_LANG = "en"
 
 BASE_SYSTEM_INSTRUCTIONS = (
     "You are a voice agent speaking on a live phone call. Always reply in "
@@ -366,22 +366,25 @@ class TextToSpeech:
         return chunks or [text]
 
     async def synthesize_to_mulaw(self, text: str, language: str = "en") -> bytes:
-        voice = TTS_VOICE_MAP.get(language, DEFAULT_TTS_VOICE)
-        mp3_io = io.BytesIO()
+        lang = TTS_LANG_MAP.get(language, DEFAULT_TTS_LANG)
         try:
-            communicate = Communicate(text, voice=voice)
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    mp3_io.write(chunk["data"])
+            mp3_io = await asyncio.to_thread(self._synthesize_sync, text, lang)
         except Exception:
-            logger.exception(f"TTS synthesis failed for voice={voice}")
+            logger.exception(f"TTS synthesis failed for language={lang}")
             return b""
 
-        mp3_io.seek(0)
-        if mp3_io.getbuffer().nbytes == 0:
+        if not mp3_io or mp3_io.getbuffer().nbytes == 0:
             return b""
         segment = AudioSegment.from_mp3(mp3_io).set_frame_rate(8000).set_channels(1)
         return audioop.lin2ulaw(segment.raw_data, 2)
+
+    @staticmethod
+    def _synthesize_sync(text: str, lang: str) -> io.BytesIO:
+        # gTTS does blocking network IO, so this runs off the event loop via asyncio.to_thread.
+        buf = io.BytesIO()
+        gTTS(text=text, lang=lang).write_to_fp(buf)
+        buf.seek(0)
+        return buf
 
 
 # =============================================================================
