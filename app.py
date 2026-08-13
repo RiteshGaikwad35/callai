@@ -653,6 +653,31 @@ async def media(ws: WebSocket):
             await ws.close()
 
 
+async def _speak_sentences(ws: WebSocket, stream_sid: str, sentences: list[str], language: str):
+    """Speaks a list of sentences with no dead air between them.
+
+    Synthesis is a blocking network call (gTTS), so without pipelining,
+    each sentence pauses for a full round-trip before it starts playing.
+    Here we kick off synthesis for the NEXT sentence while the CURRENT
+    one is still streaming to Twilio, so by the time playback finishes,
+    the next sentence's audio is already sitting in memory ready to go.
+    """
+    if not sentences:
+        return
+
+    synth_task = asyncio.create_task(tts.synthesize_to_mulaw(sentences[0], language=language))
+    for i, _sentence in enumerate(sentences):
+        audio = await synth_task
+        if i + 1 < len(sentences):
+            synth_task = asyncio.create_task(
+                tts.synthesize_to_mulaw(sentences[i + 1], language=language)
+            )
+        if sessions.get(stream_sid) is None:
+            return  # caller hung up mid-reply
+        if audio:
+            await _stream_audio(ws, stream_sid, audio)
+
+
 async def _greet(ws: WebSocket, stream_sid: str, call_id: str):
     session = sessions.get(stream_sid)
     if session is None:
@@ -664,10 +689,7 @@ async def _greet(ws: WebSocket, stream_sid: str, call_id: str):
     reply = await llm.reply(session.history)
     session.add_assistant_turn(reply, settings.max_history_turns)
     call_contexts.append_transcript(call_id, "agent", reply)
-    for sentence in tts.split_into_sentences(reply):
-        audio = await tts.synthesize_to_mulaw(sentence, language=session.last_language)
-        if audio:
-            await _stream_audio(ws, stream_sid, audio)
+    await _speak_sentences(ws, stream_sid, tts.split_into_sentences(reply), session.last_language)
 
 
 async def _handle_turn(ws: WebSocket, stream_sid: str, call_id: str, pcm_audio: bytes):
@@ -691,12 +713,7 @@ async def _handle_turn(ws: WebSocket, stream_sid: str, call_id: str, pcm_audio: 
     session.add_assistant_turn(reply, settings.max_history_turns)
     call_contexts.append_transcript(call_id, "agent", reply)
 
-    for sentence in tts.split_into_sentences(reply):
-        if sessions.get(stream_sid) is None:
-            return
-        audio = await tts.synthesize_to_mulaw(sentence, language=language)
-        if audio:
-            await _stream_audio(ws, stream_sid, audio)
+    await _speak_sentences(ws, stream_sid, tts.split_into_sentences(reply), language)
 
 
 async def _stream_audio(ws: WebSocket, stream_sid: str, mulaw_audio: bytes):
